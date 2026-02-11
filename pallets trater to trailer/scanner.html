@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trailer Asset Tracker & Archive</title>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        .header { text-align: center; border-bottom: 2px solid #eee; padding-bottom: 20px; margin-bottom: 20px; }
+        .input-row { display: flex; gap: 10px; margin-bottom: 10px; }
+        input { flex: 1; padding: 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; }
+        button { padding: 12px 20px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 6px; font-weight: bold; }
+        button:hover { opacity: 0.9; }
+        button.secondary { background: #6c757d; }
+        button.success { background: #28a745; }
+        button.danger { background: #dc3545; }
+        .section { background: #fafafa; padding: 15px; border-radius: 8px; border: 1px solid #eaeaea; margin-bottom: 20px; position: relative; }
+        .barcode-svg { display: block; margin: 15px auto; background: white; padding: 10px; border: 1px solid #ddd; }
+        .status-badge { float: right; padding: 5px 12px; border-radius: 20px; font-size: 14px; text-transform: uppercase; font-weight: bold; }
+        .open { background: #d4edda; color: #155724; }
+        .closed { background: #f8d7da; color: #721c24; }
+        .pallet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-top: 15px; }
+        .pallet-card { background: white; border: 1px solid #ddd; padding: 10px; text-align: center; border-radius: 4px; font-size: 14px; font-weight: bold; }
+        .log-box { font-family: monospace; font-size: 12px; background: #333; color: #adff2f; padding: 10px; border-radius: 4px; height: 100px; overflow-y: auto; margin-top: 10px; }
+        .archive-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .archive-table th, .archive-table td { text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }
+        .archive-table tr:hover { background: #f9f9f9; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>Trailer Asset Tracker</h1>
+        <div id="setup-view" class="input-row">
+            <input type="text" id="new-trailer-name" placeholder="Enter Trailer Number (e.g. T-101)...">
+            <button onclick="createNewTrailer()">Create New Trailer</button>
+        </div>
+        <button id="back-to-list" class="secondary" style="display:none; margin-top:10px;" onclick="showArchive()">Back to Archive List</button>
+    </div>
+
+    <!-- Active Trailer View -->
+    <div id="active-trailer-view" style="display:none;">
+        <div class="section">
+            <span id="trailer-status" class="status-badge"></span>
+            <h3>Trailer: <span id="current-trailer-id"></span></h3>
+            <svg id="trailer-barcode" class="barcode-svg"></svg>
+            
+            <div id="scan-zone">
+                <p>Pallets: <strong id="pallet-count">0</strong> / 26</p>
+                <div class="input-row">
+                    <input type="text" id="pallet-input" placeholder="Scan/Type Pallet Barcode...">
+                    <button onclick="processScan()">Add</button>
+                </div>
+                <button class="secondary" style="width:100%" onclick="closeTrailer()">Close & Lock Trailer</button>
+            </div>
+
+            <div id="closed-zone" style="display:none; text-align: center;">
+                <p style="color: red; font-weight: bold;">TRAILER CLOSED</p>
+                <button class="success" onclick="exportToCSV()">Download CSV</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h4>Pallets on Board</h4>
+            <div id="pallet-list" class="pallet-grid"></div>
+        </div>
+
+        <div class="section">
+            <h4>Full Audit Log</h4>
+            <div id="history-log" class="log-box"></div>
+        </div>
+    </div>
+
+    <!-- Archive List View -->
+    <div id="archive-view">
+        <div class="section">
+            <h4>Historical Trailer Records (Saved)</h4>
+            <table class="archive-table">
+                <thead>
+                    <tr>
+                        <th>Trailer ID</th>
+                        <th>Status</th>
+                        <th>Pallets</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody id="archive-list"></tbody>
+            </table>
+            <button class="danger" style="margin-top: 20px; font-size: 11px;" onclick="clearAllData()">Wipe All History</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let trailers = JSON.parse(localStorage.getItem('trailer_storage')) || {};
+    let activeTrailerId = null;
+
+    // Initialize Archive View on Load
+    renderArchive();
+
+    function createNewTrailer() {
+        const id = document.getElementById('new-trailer-name').value.trim().toUpperCase();
+        if (!id) { alert("Enter a Trailer Number."); return; }
+        
+        if (trailers[id]) {
+            if (!confirm("This trailer ID already exists in records. Open existing?")) return;
+            openTrailer(id);
+            return;
+        }
+
+        trailers[id] = { 
+            id: id, 
+            pallets: [], 
+            status: 'Open', 
+            date: new Date().toLocaleString(),
+            logs: [`Created at ${new Date().toLocaleString()}`] 
+        };
+        openTrailer(id);
+    }
+
+    function openTrailer(id) {
+        activeTrailerId = id;
+        document.getElementById('setup-view').style.display = 'none';
+        document.getElementById('archive-view').style.display = 'none';
+        document.getElementById('active-trailer-view').style.display = 'block';
+        document.getElementById('back-to-list').style.display = 'inline-block';
+        saveAndRender();
+    }
+
+    function showArchive() {
+        activeTrailerId = null;
+        document.getElementById('setup-view').style.display = 'flex';
+        document.getElementById('archive-view').style.display = 'block';
+        document.getElementById('active-trailer-view').style.display = 'none';
+        document.getElementById('back-to-list').style.display = 'none';
+        renderArchive();
+    }
+
+    function processScan() {
+        const input = document.getElementById('pallet-input');
+        const palletId = input.value.trim().toUpperCase();
+        if (!palletId || !activeTrailerId) return;
+
+        const trailer = trailers[activeTrailerId];
+        if (trailer.status === 'Closed') return;
+        if (trailer.pallets.length >= 26) { alert("Full (26 pallets)!"); input.value = ''; return; }
+
+        // Transfer Check
+        let sourceTrailer = Object.keys(trailers).find(tId => trailers[tId].pallets.includes(palletId));
+
+        if (sourceTrailer && sourceTrailer !== activeTrailerId) {
+            const reason = prompt(`Pallet ${palletId} is in ${sourceTrailer}. Reason for move?`);
+            if (reason) {
+                trailers[sourceTrailer].pallets = trailers[sourceTrailer].pallets.filter(p => p !== palletId);
+                trailers[sourceTrailer].logs.push(`Removed: ${palletId} moved to ${activeTrailerId}. Reason: ${reason}`);
+                addPallet(palletId, `Transferred from ${sourceTrailer}. Reason: ${reason}`);
+            }
+        } else if (trailer.pallets.includes(palletId)) {
+            alert("Already scanned.");
+        } else {
+            addPallet(palletId, "Loaded");
+        }
+        input.value = '';
+        input.focus();
+    }
+
+    function addPallet(id, note) {
+        trailers[activeTrailerId].pallets.push(id);
+        trailers[activeTrailerId].logs.push(`[${new Date().toLocaleTimeString()}] ${id}: ${note}`);
+        saveAndRender();
+    }
+
+    function closeTrailer() {
+        if (confirm("Close trailer? Data will be locked for auditing.")) {
+            trailers[activeTrailerId].status = 'Closed';
+            trailers[activeTrailerId].logs.push(`Locked at ${new Date().toLocaleString()}`);
+            saveAndRender();
+        }
+    }
+
+    function saveAndRender() {
+        localStorage.setItem('trailer_storage', JSON.stringify(trailers));
+        const trailer = trailers[activeTrailerId];
+        
+        document.getElementById('current-trailer-id').innerText = trailer.id;
+        document.getElementById('pallet-count').innerText = trailer.pallets.length;
+        const statusEl = document.getElementById('trailer-status');
+        statusEl.innerText = trailer.status;
+        statusEl.className = 'status-badge ' + trailer.status.toLowerCase();
+        
+        document.getElementById('scan-zone').style.display = trailer.status === 'Open' ? 'block' : 'none';
+        document.getElementById('closed-zone').style.display = trailer.status === 'Closed' ? 'block' : 'none';
+
+        JsBarcode("#trailer-barcode", trailer.id, { format: "CODE128", width: 2, height: 60 });
+        document.getElementById('pallet-list').innerHTML = trailer.pallets.map(p => `<div class="pallet-card">${p}</div>`).join('');
+        document.getElementById('history-log').innerHTML = trailer.logs.slice().reverse().map(l => `<div>> ${l}</div>`).join('');
+    }
+
+    function renderArchive() {
+        const list = document.getElementById('archive-list');
+        list.innerHTML = Object.values(trailers).reverse().map(t => `
+            <tr onclick="openTrailer('${t.id}')">
+                <td><strong>${t.id}</strong></td>
+                <td><span class="status-badge ${t.status.toLowerCase()}">${t.status}</span></td>
+                <td>${t.pallets.length} Pallets</td>
+                <td>${t.date}</td>
+            </tr>
+        `).join('');
+    }
+
+    function exportToCSV() {
+        const t = trailers[activeTrailerId];
+        let csv = "Trailer ID,Pallet ID,Status,Date Created\n";
+        t.pallets.forEach(p => csv += `${t.id},${p},Loaded,${t.date}\n`);
+        csv += "\nAUDIT LOG\n" + t.logs.join("\n");
+        
+        const link = document.createElement("a");
+        link.href = 'data:text/csv;charset=utf-8,' + encodeURI(csv);
+        link.download = `Audit_Trailer_${t.id}.csv`;
+        link.click();
+    }
+
+    function clearAllData() {
+        if (confirm("DANGER: This will delete ALL stored trailers permanently. Continue?")) {
+            localStorage.clear();
+            location.reload();
+        }
+    }
+
+    document.getElementById('pallet-input').addEventListener('keypress', (e) => { if(e.key === 'Enter') processScan(); });
+</script>
+
+</body>
+</html>
